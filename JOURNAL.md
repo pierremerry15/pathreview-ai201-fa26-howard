@@ -31,7 +31,7 @@ carry `@pytest.mark.xfail(strict=True)`.
 
 **Branch name:** `fix/53-pii-scrubber-parenthesized-phone`
 
-**Setup confirmation:** [ ] App runs locally at localhost:5173
+**Setup confirmation:** [x] App runs locally at localhost:5173
 
 **Cohort ledger:** [ ] Issue added to cohort ledger
 
@@ -82,16 +82,48 @@ reproducible failure, a contained blast radius, and prepared tests lets me spend
 the parts that are actually graded — contribution standards, process documentation, and a
 clean PR — instead of spending the four weeks still trying to understand the problem.
 
-**Open questions to resolve during implementation.** Whether `detect()` depends on the
-pattern's three capture groups for reporting offsets, and whether `phone_intl` already
-matches `+1 555 123 4567` through a different route, which would change what the fix for that
-particular format needs to be.
+**Open questions I had when I picked this.** Whether `detect()` depends on the pattern's
+three capture groups for reporting offsets, and whether `phone_intl` already matches
+`+1 555 123 4567` through a different route, which would change what the fix for that
+particular format needs to be. Both are answered in the setup notes below, now that the
+suite runs on this machine; a third question surfaced in their place.
 
 ---
 
 ### Setup status
 
-Backend and frontend dependency installation and the `docker compose` services are not yet
-running on this machine; Docker is not installed locally. Reproduction above was done with
-the standard library against the pattern in isolation, so it does not depend on the full
-stack. The `localhost:5173` checkbox stays unchecked until the app genuinely serves.
+The environment is up and the local baseline is green.
+
+| Step | Result |
+|---|---|
+| `npm install` (frontend) | installed, no audit-blocking failures |
+| `npm run dev` | Vite serving on **http://localhost:5173**, login page renders, no console errors |
+| `npm test -- --run` | 18 passed across 2 files |
+| `.venv` + `pip install -e ".[dev]"` | installed on Python 3.13.5 |
+| `pytest tests/unit` | **375 passed, 53 xfailed**, 0 failures |
+| `ruff check .` | All checks passed |
+| `mypy api/ core/ ingestion/ rag/ agent/ safety/` | Success: no issues in 76 source files |
+
+Docker is not installed on this machine, so the `docker compose` services — PostgreSQL,
+Redis, and ChromaDB — are not running, and the FastAPI backend on port 8000 is therefore
+down. The frontend runs and serves independently of them; anything that calls the API
+(login, profile upload) will fail until those services exist. This does not block the issue:
+`pytest.ini_options` marks the unit suite as "fast, no external dependencies," and the five
+tests covering issue #53 run and xfail correctly without any service. Standing up Postgres
+locally is a prerequisite for the integration suite, not for this fix.
+
+Running the suite also settled the two open questions from my selection notes:
+
+- **`detect()` does not depend on the pattern's capture groups.** It reports
+  `match.group()`, `match.start()`, and `match.end()` — the whole match, never groups 1–3.
+  I can restructure the groups in the phone pattern without changing what `detect()` returns.
+- **`phone_intl` does not rescue `+1 555 123 4567`.** Its pattern,
+  `\+[0-9]{1,3}[-.]?[0-9]{1,14}`, requires a digit immediately after the optional `-` or `.`,
+  and the next character there is a space, so it fails too. That format needs the `phone_us`
+  fix; there is no second path covering it.
+
+One thing I did not expect: the issue body names four failing tests, but five carry the
+`#53` marker. The fifth, `test_mixed_pii_and_text`, uses a dashed number that the current
+pattern already redacts, so I need to find out during implementation why it still xfails
+before I delete its marker — deleting a marker on a test that fails for an unrelated reason
+would turn CI red for something I never fixed.
