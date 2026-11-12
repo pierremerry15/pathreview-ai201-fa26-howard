@@ -127,3 +127,74 @@ One thing I did not expect: the issue body names four failing tests, but five ca
 pattern already redacts, so I need to find out during implementation why it still xfails
 before I delete its marker — deleting a marker on a test that fails for an unrelated reason
 would turn CI red for something I never fixed.
+
+---
+
+## Unit 8 — Reproduction & solution planning
+
+**Reproduction commit link:** https://github.com/pierremerry15/pathreview-ai201-fa26-howard/commit/ce2dde861dd3777b3b0f810404c8d94f3a4f2ef6
+
+**Reproduction summary:**
+I ran the issue's snippet and then added parametrized tests that put each US phone format
+through `scrub()` and `detect()` one at a time. Every space-separated format fails
+(`(555) 123-4567`, `+1 555 123 4567`, `+1 (555) 123-4567`, `555 123 4567`), and
+`(555)123-4567` is only partly redacted, to `([REDACTED]`. That exposed a second defect:
+the pattern's leading `\b` can never sit before `(` or `+`.
+
+**PLAN.md link:** https://github.com/pierremerry15/pathreview-ai201-fa26-howard/blob/fix/53-pii-scrubber-parenthesized-phone/PLAN.md
+
+**Walkthrough video (recommended):** _not recorded_
+
+**Blockers or open questions:**
+- **`test_mixed_pii_and_text` fails for a different reason.** This answers the question I
+  left open in Unit 7. Its phone (`555-123-4567`) already redacts. The test fails because
+  the `street_address` pattern has no word boundary on its suffix, so the `pl` in
+  "applications" counts as `Pl` (Place), and the match takes "Python" with it. The phone
+  fix alone won't flip this test. I'm asking in Slack whether to fix `street_address` in
+  this PR as a separate commit or to split it into its own issue.
+- `PIIScrubber` isn't imported anywhere outside the unit tests, even though
+  `ARCHITECTURE.md` lists it in the safety middleware chain. That keeps the blast radius
+  small, but it means I can only verify the fix through tests, not the UI.
+- Known trade-off of widening the separator: `100 200 3000` in prose will start to
+  redact. I'll note it in the PR instead of trying to make the regex guess at intent.
+
+### Reproduction log
+
+Baseline before touching anything: `pytest tests/unit/test_pii_scrubber.py` gives
+**20 passed, 5 xfailed**. The five xfails are the #53 markers.
+
+The issue's snippet, run as written:
+
+```text
+>>> s.scrub('Call me at (555) 123-4567 or 555-123-4567')
+'Call me at (555) 123-4567 or [REDACTED]'
+>>> s.detect('Call me at (555) 123-4567')
+[]
+```
+
+Format by format, from the new tests in the reproduction commit:
+
+| Format | `scrub()` | `detect()` value |
+|---|---|---|
+| `555-123-4567` / `555.123.4567` / `5551234567` / `1-555-123-4567` | `[REDACTED]` | full number |
+| `(555) 123-4567` | unchanged | — |
+| `+1 555 123 4567` | unchanged | — |
+| `+1 (555) 123-4567` | unchanged | — |
+| `555 123 4567` | unchanged | — |
+| `(555)123-4567` | `([REDACTED]` | `555)123-4567` |
+
+Tracing `test_mixed_pii_and_text`:
+
+```text
+>>> [d for d in s.detect(text) if d["type"] == "street_address"]
+[{'type': 'street_address', 'value': '5 years developing Python appl', ...}]
+```
+
+After the reproduction commit: **33 passed, 15 xfailed** in the file (5 original + 10 new
+per-format cases). Five new guard cases (ISO date, ZIP+4, long ID, version, 7-digit local)
+pass today and must keep passing after the fix.
+
+**Checking the plan before committing to it:** I applied the proposed `phone_us` and
+`street_address` patterns in a throwaway copy and removed every #53 marker. The file went
+to **48 passed, 0 xfailed**, and across `tests/unit` the only change was those xfails
+becoming passes. None of that code is committed. The real implementation is Unit 9.
