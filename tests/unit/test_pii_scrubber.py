@@ -272,3 +272,68 @@ class TestPIIScrubber:
 
         # Should be minimal or no detections
         # (version number shouldn't be flagged as SSN)
+
+
+# --- Issue #53 reproduction ------------------------------------------------
+# `test_us_phone_formats` above loops over its formats and stops at the first
+# failure, so it hides how many formats are actually broken. These cases run
+# each format on its own. Every format that uses a space as a separator fails
+# today, because the `phone_us` separator class is `[-.]` and admits no
+# whitespace. The "#53" markers come off when the pattern is fixed.
+_ISSUE_53 = pytest.mark.xfail(
+    strict=True,
+    reason="issue #53: phone_us separator class [-.] rejects whitespace",
+)
+
+_US_PHONE_FORMATS = [
+    pytest.param("555-123-4567", id="dashed"),
+    pytest.param("555.123.4567", id="dotted"),
+    pytest.param("5551234567", id="bare-digits"),
+    pytest.param("1-555-123-4567", id="leading-1-dashed"),
+    pytest.param("(555) 123-4567", id="parenthesized", marks=_ISSUE_53),
+    pytest.param("+1 555 123 4567", id="plus1-spaced", marks=_ISSUE_53),
+    pytest.param("+1 (555) 123-4567", id="plus1-parenthesized", marks=_ISSUE_53),
+    pytest.param("555 123 4567", id="spaced", marks=_ISSUE_53),
+    # No space here, but the leading "(" is left behind: the match starts at
+    # "555" because the pattern opens with \b, which cannot sit before "(".
+    pytest.param("(555)123-4567", id="parenthesized-no-space", marks=_ISSUE_53),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phone", _US_PHONE_FORMATS)
+def test_issue_53_each_us_phone_format_fully_redacted(phone):
+    """Each common US phone format is redacted completely, with no digits or parens left."""
+    scrubbed = PIIScrubber().scrub(f"Contact: {phone} today")
+
+    assert scrubbed == "Contact: [REDACTED] today"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phone", _US_PHONE_FORMATS)
+def test_issue_53_detect_reports_each_us_phone_format(phone):
+    """detect() reports each format as a phone_us hit covering the whole number."""
+    detected = PIIScrubber().detect(f"Contact: {phone} today")
+
+    phones = [d for d in detected if d["type"] == "phone_us"]
+    assert [p["value"] for p in phones] == [phone]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("Released on 2026-11-11.", id="iso-date"),
+        pytest.param("Mail it to Washington, DC 20059-1234.", id="zip-plus-4"),
+        pytest.param("Order 12345678901234 shipped.", id="long-identifier"),
+        pytest.param("Upgrade to version 1.2.3 now.", id="version-number"),
+        pytest.param("Dial 555-1234 locally.", id="seven-digit-local"),
+    ],
+)
+def test_issue_53_guard_non_phone_numbers_untouched(text):
+    """Guard rail for the #53 fix: digit runs that are not phone numbers stay as they are.
+
+    These pass today. They exist so that widening the phone pattern cannot
+    quietly start redacting dates, ZIP+4 codes, or identifiers.
+    """
+    assert PIIScrubber().scrub(text) == text
